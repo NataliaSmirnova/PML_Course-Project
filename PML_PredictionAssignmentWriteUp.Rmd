@@ -1,0 +1,305 @@
+---
+title: "Practical machine learning: Prediction Assignment Writeup"
+author: "Natalia Smirnova"
+date: "Tuesday, May 19, 2015"
+output: html_document
+---
+###Synopsis
+
+The aim of the report is to present prediction model for the data set with the information about personal activity. The data was collected from accelerometers on the belt, forearm, arm, and dumbell of 6 participants and includes the parameters that define how well the exercises were performed. The model should predict the manner in which participants did the exercise (5 categories). The description of the experiment can be found [here](http://groupware.les.inf.puc-rio.br/har).
+
+###Data processing and exploratory analysis
+
+The data set was split into [training data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) set and [test data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) set. 
+
+We uploaded data sets:
+
+```{r,echo=TRUE,cache=TRUE}
+if (!file.exists("pml-training.csv")) {
+    url_train<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(url_train,"./pml-training.csv")
+}
+
+if (!file.exists("pml-testing.csv")) {
+    url_test<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(url_test,"./pml-testing.csv")
+}
+data_train_row<-read.csv("./pml-training.csv",header=TRUE)
+data_test<-read.csv("./pml-testing.csv",header=TRUE)
+```
+
+For training purposes we split training set into training and validation sets (package "caret" should be installed).
+
+```{r,echo=TRUE,cache=TRUE}
+library(caret)
+set.seed(1234)
+inTrain <- createDataPartition(y=data_train_row$classe,
+                               p=0.6, list=FALSE)
+data_train <- data_train_row[inTrain,]
+data_validation <- data_train_row[-inTrain,]
+```
+
+We explored the training data set to understand its structure. The data set includes names of participants, date and time of performed exercise, number of set and parameters that describe the way of performing exercise by participant.
+
+We checked the structure of test data set (looking for variables that have only missing values) in order to exclude not necessary variables. So we reduced the number of variables from 160 to 60.
+
+```{r,echo=TRUE,cache=TRUE}
+column_test.has.na <- apply(data_test, 2, function(x){all(is.na(x))})
+indexes_data_test<-which(column_test.has.na==TRUE)
+data_train<-subset(data_train,select=-c(indexes_data_test))
+data_validation<-subset(data_validation,select=-c(indexes_data_test))
+data_test<-subset(data_test,select=-c(indexes_data_test))
+```
+
+
+We investigated the relationship between different variables and predicted value ("classe" that define the manner in which participants did the exercise) (package "plyr" should be installed).
+
+1. relationship between manner of exercises performed and the time and date of performing the exercises
+
+```{r,echo=TRUE}
+library(plyr)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+data_train_date<-subset(data_train,select=c("cvtd_timestamp","classe"))
+data_train_date$date<-as.factor(as.POSIXct(substr(data_train_date$cvtd_timestamp ,1,10),format = "%d/%m/%Y"))
+data_train_date$classe<-as.factor(data_train_date$classe)
+data_train_date$n=1
+
+data_train_date_plot<-ddply(data_train_date, c("date","classe"), summarise, count = sum(n))
+plot_date<-ggplot(data_train_date_plot, aes(date,count)) + geom_point(aes(color=classe))
+
+
+data_train_time<-subset(data_train,select=c("cvtd_timestamp","classe"))
+data_train_time$time<-as.POSIXct(substr(data_train_time$cvtd_timestamp ,12,16),format = "%H:%M")
+data_train_time$classe<-as.factor(data_train_time$classe)
+data_train_time$n=1
+
+data_train_time_plot<-ddply(data_train_time, c("time","classe"), summarise, count = sum(n))
+plot_time<-ggplot(data_train_time_plot, aes(time,count)) + geom_point(aes(color=classe))
+
+grid.arrange(plot_date, plot_time, ncol=2,main="Quality of exercises performed against date and time")
+```
+
+It is obvious from the first graph that the data keeps almost the same trend from date to date. So we can exclude from the model date-variable. Using the second graph we can see that there is no exact pattern in the data. So, we can assume that manner of exercises performed doesn't depend on date and time of performing exercises.
+
+
+2. relationship between manner of exercises performed and variable "window"
+
+```{r,echo=TRUE}
+data_train_window<-subset(data_train,select=c("new_window","num_window","classe"))
+data_train_window$new_window<-as.factor(data_train_window$new_window)
+data_train_window$classe<-as.factor(data_train_date$classe)
+data_train_window$n=1
+
+data_train_window_plot<-ddply(data_train_window, c("new_window","num_window","classe"), summarise, count = sum(n))
+ggplot(data_train_window_plot, aes(num_window,count)) + facet_grid(. ~ new_window) +geom_point(aes(color=classe))+labs(title="Quality of exercises performed against windows", x="number of window")
+```
+
+From the graphs it is visible that there is some pattern assuming that there is a the dependence between the manner of exercises performed and variable "window". So, we need included the variable into the prediction models.
+
+3. relationship between manner of exercises performed and parameters that describe the manner
+
+```{r,echo=TRUE}
+library(caret)
+featurePlot(x=data_train[,c("roll_belt","pitch_belt","yaw_belt","total_accel_belt","gyros_belt_x","gyros_belt_y","gyros_belt_z","accel_belt_x","accel_belt_y","accel_belt_z","magnet_belt_x","magnet_belt_y","magnet_belt_z")],y=data_train$classe,plot="box")
+featurePlot(x=data_train[,c("roll_arm","pitch_arm","yaw_arm","total_accel_arm","gyros_arm_x","gyros_arm_y","gyros_arm_z","accel_arm_x","accel_arm_y","accel_arm_z","magnet_arm_x","magnet_arm_y","magnet_arm_z")],y=data_train$classe,plot="box")
+featurePlot(x=data_train[,c("roll_dumbbell","pitch_dumbbell","yaw_dumbbell","total_accel_dumbbell","gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z","accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z","magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z")],y=data_train$classe,plot="box")
+featurePlot(x=data_train[,c("roll_forearm","pitch_forearm","yaw_forearm","total_accel_forearm","gyros_forearm_x","gyros_forearm_y","gyros_forearm_z","accel_forearm_x","accel_forearm_y","accel_forearm_z","magnet_forearm_x","magnet_forearm_y","magnet_forearm_z")],y=data_train$classe,plot="box")
+```
+
+From the graphs it is obvious that the outcome doesn't depent on the following variables: "gyros_belt_x", "gyros_belt_y", "gyros_belt_z", "gyros_dumbbell_x", "gyros_dumbbell_y", "gyros_dumbbell_z", "gyros_arm_x", "gyros_arm_y", "gyros_arm_z", "gyros_forearm_x", "gyros_forearm_y", "gyros_forearm_z". So, we can exclude these variables from the prediction models.
+
+```{r,echo=TRUE,cache=TRUE}
+data_train<-subset(data_train,select=-c(gyros_belt_x, gyros_belt_y, gyros_belt_z, gyros_dumbbell_x, gyros_dumbbell_y, gyros_dumbbell_z, gyros_arm_x, gyros_arm_y, gyros_arm_z, gyros_forearm_x, gyros_forearm_y, gyros_forearm_z, cvtd_timestamp))
+data_validation<-subset(data_validation,select=-c(gyros_belt_x, gyros_belt_y, gyros_belt_z, gyros_dumbbell_x, gyros_dumbbell_y, gyros_dumbbell_z, gyros_arm_x, gyros_arm_y, gyros_arm_z, gyros_forearm_x, gyros_forearm_y, gyros_forearm_z, cvtd_timestamp))
+data_test<-subset(data_test,select=-c(gyros_belt_x, gyros_belt_y, gyros_belt_z, gyros_dumbbell_x, gyros_dumbbell_y, gyros_dumbbell_z, gyros_arm_x, gyros_arm_y, gyros_arm_z, gyros_forearm_x, gyros_forearm_y, gyros_forearm_z, cvtd_timestamp))
+```
+ 
+###Model construction 
+ 
+We constructed different prediction models to get the level of in-sample error (train data) no more than 5% (95% accuracy) and out-sample error (validation data) no more than 10% (90% accuracy).
+Before constructing the model we will exclude the variable "X" from train and validation data sets since it presents the number of observation and is unique for every observation.
+
+```{r,echo=TRUE,cache=TRUE}
+data_train$X<-NULL
+data_validation$X<-NULL
+```
+
+1. Regression tree model - CART model (package "rpart") 
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+library(rpart)
+if (!file.exists("fit_mod_rf.rds")) {
+    ptm <- proc.time()
+    fit_mod_rf<-rpart(classe ~., data=data_train, method="class", control=rpart.control (minsplit=10,cp=0, xval=1))
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_mod_rf, "fit_mod_rf.rds")
+} else {fit_mod_rf <- readRDS("fit_mod_rf.rds")
+        }
+```
+
+Accuracy of the model:
+
+```{r,echo=TRUE,cache=TRUE}
+pred<-predict(fit_mod_rf,data_train)
+pred_vector<-vector()
+for (i in 1:nrow(pred)) {
+    if (pred[i,1]==1) {pred_vector[i]="A"}
+    else if (pred[i,2]==1) {pred_vector[i]="B"}
+    else if (pred[i,3]==1) {pred_vector[i]="C"}
+    else if (pred[i,4]==1) {pred_vector[i]="D"}
+    else  {pred_vector[i]="E"}
+}
+table_acc<-table(pred_vector,data_train$classe)
+sum_total=0
+sum_diag=0
+for (i in 1:nrow(table_acc)) {
+    for (j in 1:ncol(table_acc)) {
+       sum_total = sum_total + table_acc[i,j] 
+       if (i==j) {sum_diag = sum_diag + table_acc[i,i]}
+    }
+    
+}
+print(paste("Accuracy of the model (in-sample): ",round(sum_diag/sum_total,2)*100,"%"))
+print(paste("In-sample error: ",100-round(sum_diag/sum_total,2)*100,"%"))
+
+pred<-predict(fit_mod_rf,data_validation)
+pred_vector<-vector()
+for (i in 1:nrow(pred)) {
+    if (pred[i,1]==1) {pred_vector[i]="A"}
+    else if (pred[i,2]==1) {pred_vector[i]="B"}
+    else if (pred[i,3]==1) {pred_vector[i]="C"}
+    else if (pred[i,4]==1) {pred_vector[i]="D"}
+    else  {pred_vector[i]="E"}
+}
+table_acc<-table(pred_vector,data_validation$classe)
+sum_total=0
+sum_diag=0
+for (i in 1:nrow(table_acc)) {
+    for (j in 1:ncol(table_acc)) {
+       sum_total = sum_total + table_acc[i,j] 
+       if (i==j) {sum_diag = sum_diag + table_acc[i,i]}
+    }
+    
+}
+print(paste("Accuracy of the model (out-sample): ",round(sum_diag/sum_total,2)*100,"%"))
+print(paste("Out-sample error: ",100-round(sum_diag/sum_total,2)*100,"%"))
+```
+
+2.Regression tree model (package "caret")
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+if (!file.exists("fit_mod_caret_rpart.rds")) {
+    ptm <- proc.time()
+    fit_mod_caret_rpart<-train(classe~ .,data=data_train,method="rpart")
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_mod_caret_rpart, "fit_mod_caret_rpart.rds")
+    } else {fit_mod_caret_rpart <- readRDS("fit_mod_caret_rpart.rds")
+            }
+```
+
+Accuracy of the model:
+
+```{r,echo=TRUE,cache=TRUE}
+confusionMatrix(predict(fit_mod_caret_rpart,newdata=data_train),data_train$classe)
+confusionMatrix(predict(fit_mod_caret_rpart,newdata=data_validation),data_validation$classe)
+```
+
+3.Regression tree model - "random forest" (package "caret")
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+if (!file.exists("fit_mod_caret_rf.rds")) {
+    ptm <- proc.time()
+    fit_mod_caret_rf<-train(classe~ .,data=data_train,method="rf")
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_mod_caret_rf, "fit_mod_caret_rf.rds")
+    } else {fit_mod_caret_rf <- readRDS("fit_mod_caret_rf.rds")
+            }
+```
+
+Accuracy of the model:
+
+```{r,echo=TRUE,cache=TRUE}
+confusionMatrix(predict(fit_mod_caret_rf,newdata=data_train),data_train$classe)
+confusionMatrix(predict(fit_mod_caret_rf,newdata=data_validation),data_validation$classe)
+```
+
+4. Regression tree model - "random forest" with preprocessing using principal component method (package "caret")
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+if (!file.exists("fit_mod_caret_rf_pca.rds")) {
+    ptm <- proc.time()
+    fit_mod_caret_rf_pca<-train(classe~ .,data=data_train,method="rf",preProcess="pca",prox=TRUE)
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_mod_caret_rf_pca, "fit_mod_caret_rf_pca.rds")
+    } else {fit_mod_caret_rf_pca <- readRDS("fit_mod_caret_rf_pca.rds")
+            }    
+```
+
+Accuracy of the model:
+
+```{r,echo=TRUE,cache=TRUE}
+confusionMatrix(predict(fit_mod_caret_rf_pca,newdata=data_train),data_train$classe)
+confusionMatrix(predict(fit_mod_caret_rf_pca,newdata=data_validation),data_validation$classe)
+```
+
+5. k-Nearest Neighbors model (package "kknn")
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+if (!file.exists("fit_knn.rds")) {
+    library(kknn)
+    ptm <- proc.time()
+    fit_knn<- kknn(classe~., data_train, data_validation)
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_knn, "fit_knn.rds")
+} else {fit_knn <- readRDS("fit_knn.rds")
+        }      
+```
+
+Accuracy of the model:
+
+```{r,echo=TRUE,cache=TRUE}
+table_acc<-table(data_validation$classe, fitted(fit_knn))
+sum_total=0
+sum_diag=0
+for (i in 1:nrow(table_acc)) {
+    for (j in 1:ncol(table_acc)) {
+       sum_total = sum_total + table_acc[i,j] 
+       if (i==j) {sum_diag = sum_diag + table_acc[i,i]}
+    }
+    
+}
+print(paste("Accuracy of the model (out-sample): ",round(sum_diag/sum_total,2)*100,"%"))
+print(paste("Out-sample error: ",100-round(sum_diag/sum_total,2)*100,"%"))
+```
+
+6. Stochastic Gradient Boosting (package "caret")
+
+```{r,echo=TRUE,cache=TRUE,warning=FALSE}
+if (!file.exists("fit_gmb.rds")) {
+    ptm <- proc.time()
+    gbmGrid <-  expand.grid(n.trees = c(150, 2000), interaction.depth = c(2,5,13), shrinkage = c(0.001, .01), n.minobsinnode = 2)
+    nf  <- trainControl(method="cv", number=5)
+    fit_gmb <- train(classe ~. ,data = data_train, method = "gbm",trControl = nf, tuneGrid=gbmGrid,verbose = T)
+    print("Code timing: ")
+    print(proc.time() - ptm)
+    saveRDS(fit_gmb, "fit_gmb.rds")
+} else {fit_gmb <- readRDS("fit_gmb.rds")
+        }      
+```
+
+Accuracy of the model:
+```{r,echo=TRUE,cache=TRUE}
+confusionMatrix(predict(fit_gmb,newdata=data_train),data_train$classe) 
+confusionMatrix(predict(fit_gmb,newdata=data_validation),data_validation$classe) 
+```
+###Conclusion 
+
+Since two models give the accuracy 100% (Regression tree model - "random forest" and Stochastic Gradient Boosting) we give a preference to these prediction models even though the chosen models are much more time consuming in comparison with other considered models.
